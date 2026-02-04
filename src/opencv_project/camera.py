@@ -3,6 +3,7 @@
 Uses multithreading to separate frame capture from face detection for better performance.
 """
 
+import argparse
 import threading
 import time
 
@@ -10,7 +11,7 @@ import cv2
 
 
 # Configuration flags
-USE_GPU = True  # Set to False to disable GPU acceleration (UMat)
+USE_GPU = False  # Default to CPU mode; use --use-gpu flag to enable GPU acceleration
 
 
 def check_opencl_support():
@@ -58,6 +59,96 @@ def check_opencl_support():
 
     print("=====================\n")
     return use_opencl
+
+
+def list_available_cameras(max_cameras=10):
+    """Detect available cameras on the system.
+
+    Args:
+        max_cameras: Maximum number of camera indices to check
+
+    Returns:
+        List of (index, width, height, fps) tuples for available cameras
+    """
+    available = []
+    for i in range(max_cameras):
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            available.append((i, width, height, fps))
+            cap.release()
+    return available
+
+
+def select_camera(cameras):
+    """Display available cameras and let user select one.
+
+    Args:
+        cameras: List of (index, width, height, fps) tuples
+
+    Returns:
+        int: Selected camera index, or None if cancelled
+    """
+    print(f"\nFound {len(cameras)} camera(s):\n")
+    for idx, width, height, fps in cameras:
+        print(f"  [{idx}] Camera {idx}: {width}x{height} @ {fps:.0f} FPS")
+    print()
+
+    # Auto-select if only one camera
+    if len(cameras) == 1:
+        print(f"Auto-selecting Camera {cameras[0][0]} (only one available)")
+        return cameras[0][0]
+
+    # Find default camera (prefer index 0 if available, else first in list)
+    default_idx = cameras[0][0]
+    for cam in cameras:
+        if cam[0] == 0:
+            default_idx = 0
+            break
+
+    # Prompt user
+    valid_indices = [c[0] for c in cameras]
+    while True:
+        try:
+            choice = input(f"Select camera [{default_idx}]: ").strip()
+
+            # Default on empty input
+            if choice == "":
+                return default_idx
+
+            choice_idx = int(choice)
+            if choice_idx in valid_indices:
+                return choice_idx
+            print(f"Invalid selection. Choose from: {valid_indices}")
+        except ValueError:
+            print("Please enter a valid number.")
+        except KeyboardInterrupt:
+            print("\nCancelled.")
+            return None
+
+
+def parse_args():
+    """Parse command-line arguments.
+
+    Returns:
+        argparse.Namespace with parsed arguments
+    """
+    parser = argparse.ArgumentParser(
+        description="Face detection application using Haar cascades"
+    )
+    parser.add_argument(
+        "-c",
+        "--camera",
+        type=int,
+        default=None,
+        help="Camera index to use (skips interactive selection)",
+    )
+    parser.add_argument(
+        "--use-gpu", action="store_true", help="Enable GPU acceleration (OpenCL)"
+    )
+    return parser.parse_args()
 
 
 class SharedState:
@@ -357,18 +448,50 @@ def detection_thread(state, frontal_cascade, profile_cascade, detection_scale=0.
 
 def main():
     """Capture and display camera frames with face detection using Haar cascade."""
+    global USE_GPU
+
+    # Parse command-line arguments
+    args = parse_args()
+
+    # Enable GPU if --use-gpu flag is set
+    if args.use_gpu:
+        USE_GPU = True
+
     # Check OpenCL support if GPU mode is enabled
     if USE_GPU:
         opencl_available = check_opencl_support()
         if not opencl_available:
-            print("Warning: USE_GPU is True but OpenCL is not available.")
+            print("Warning: GPU mode requested but OpenCL is not available.")
             print("Falling back to CPU mode.\n")
+            USE_GPU = False
 
-    # Open the default camera (index 0)
-    cap = cv2.VideoCapture(0)
+    # Camera selection
+    print("\n=== Camera Selection ===")
+
+    if args.camera is not None:
+        # Use camera specified via CLI argument
+        camera_idx = args.camera
+        print(f"Using camera {camera_idx} (from --camera argument)")
+    else:
+        # Interactive selection
+        print("Scanning for available cameras...")
+        cameras = list_available_cameras()
+
+        if not cameras:
+            print("No cameras found!")
+            return 1
+
+        camera_idx = select_camera(cameras)
+        if camera_idx is None:
+            return 1
+
+    print(f"\nOpening Camera {camera_idx}...")
+
+    # Open selected camera
+    cap = cv2.VideoCapture(camera_idx)
 
     if not cap.isOpened():
-        print("Error: Could not open camera")
+        print(f"Error: Could not open camera {camera_idx}")
         return 1
 
     # Load the Haar cascade classifiers for frontal and profile face detection
