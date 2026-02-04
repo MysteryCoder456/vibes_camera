@@ -9,6 +9,8 @@ import time
 
 import cv2
 
+from opencv_project.alerts import DiscordAlertManager, load_alert_config
+
 
 # Configuration flags
 USE_GPU = False  # Default to CPU mode; use --use-gpu flag to enable GPU acceleration
@@ -42,7 +44,7 @@ def check_opencl_support():
         try:
             device = cv2.ocl.Device.getDefault()
             print(f"Device name: {device.name()}")
-            print(f"Device type: ", end="")
+            print("Device type: ", end="")
             dtype = device.type()
             if dtype == cv2.ocl.Device_TYPE_GPU:
                 print("GPU")
@@ -147,6 +149,17 @@ def parse_args():
     )
     parser.add_argument(
         "--use-gpu", action="store_true", help="Enable GPU acceleration (OpenCL)"
+    )
+    parser.add_argument(
+        "--alerts",
+        action="store_true",
+        help="Enable Discord DM alerts when people are detected",
+    )
+    parser.add_argument(
+        "--cooldown",
+        type=int,
+        default=300,
+        help="Minimum seconds between alerts (default: 300 = 5 minutes)",
     )
     return parser.parse_args()
 
@@ -529,7 +542,33 @@ def main():
     )
     det_thread.start()
 
-    print("Camera opened successfully. Press 'q' to quit.")
+    # Initialize alert manager if alerts are enabled
+    alert_manager = None
+    if args.alerts:
+        print("\n=== Discord Alerts ===")
+        config = load_alert_config()
+        if config:
+            try:
+                print("Connecting to Discord...")
+                alert_manager = DiscordAlertManager(
+                    config, cooldown_seconds=args.cooldown
+                )
+                print(f"Discord DM alerts enabled (cooldown: {args.cooldown}s)")
+            except Exception as e:
+                print(f"Failed to connect to Discord: {e}")
+                print("Exiting...")
+                state.stop()
+                cap.release()
+                return 1
+        else:
+            print("Alerts requested but credentials not configured.")
+            print("Exiting...")
+            state.stop()
+            cap.release()
+            return 1
+        print("======================")
+
+    print("\nCamera opened successfully. Press 'q' to quit.")
     print("Detecting faces (frontal and profile) using Haar cascade classifiers...")
     print("Running with multithreading enabled.")
     print(f"GPU acceleration (UMat): {'enabled' if USE_GPU else 'disabled'}")
@@ -578,6 +617,14 @@ def main():
                 2,
             )
 
+        # Check and send alerts if enabled
+        if alert_manager:
+            num_people = len(detections)
+            if alert_manager.should_alert(num_people):
+                # Send alert with the current display frame (has boxes drawn)
+                alert_manager.send_alert(display_frame, num_people)
+            alert_manager.update_count(num_people)
+
         # Calculate FPS
         fps_frame_count += 1
         elapsed = time.time() - fps_start_time
@@ -617,6 +664,10 @@ def main():
     state.stop()
     cap_thread.join(timeout=1.0)
     det_thread.join(timeout=1.0)
+
+    # Shutdown alert manager if enabled
+    if alert_manager:
+        alert_manager.shutdown()
 
     # Release resources
     cap.release()
