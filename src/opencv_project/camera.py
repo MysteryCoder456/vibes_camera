@@ -10,6 +10,7 @@ import time
 import cv2
 
 from opencv_project.alerts import DiscordAlertManager, load_alert_config
+from opencv_project.tracking import FaceTracker
 
 
 # Configuration flags
@@ -158,8 +159,14 @@ def parse_args():
     parser.add_argument(
         "--cooldown",
         type=int,
-        default=300,
-        help="Minimum seconds between alerts (default: 300 = 5 minutes)",
+        default=30,
+        help="Minimum seconds between alerts (default: 30)",
+    )
+    parser.add_argument(
+        "--persistence",
+        type=float,
+        default=1.0,
+        help="Seconds a face must be present before alerting (default: 1.0)",
     )
     return parser.parse_args()
 
@@ -568,6 +575,9 @@ def main():
             return 1
         print("======================")
 
+    # Initialize face tracker for persistence detection
+    face_tracker = FaceTracker(persistence_threshold=args.persistence)
+
     print("\nCamera opened successfully. Press 'q' to quit.")
     print("Detecting faces (frontal and profile) using Haar cascade classifiers...")
     print("Running with multithreading enabled.")
@@ -600,30 +610,45 @@ def main():
         # Get latest detections and mirror their x coordinates
         detections = state.get_detections()
 
-        # Draw rectangles around detected faces (with mirrored coordinates)
-        for x, y, w, h in detections:
-            # Mirror the x coordinate
-            mirrored_x = frame_width - x - w
-            cv2.rectangle(
-                display_frame, (mirrored_x, y), (mirrored_x + w, y + h), (0, 255, 0), 2
-            )
+        # Mirror detections for display (since frame is mirrored)
+        mirrored_detections = [
+            (frame_width - x - w, y, w, h) for x, y, w, h in detections
+        ]
+
+        # Update face tracker with mirrored detections
+        face_tracker.update(mirrored_detections)
+        tracked_faces = face_tracker.get_all_faces()
+        num_persistent = face_tracker.get_persistent_count()
+
+        # Draw rectangles around tracked faces with color based on persistence
+        for face in tracked_faces:
+            x, y, w, h = face.bbox
+            is_persistent = face.is_persistent(args.persistence)
+
+            # Green for persistent faces, blue for not-yet-persistent
+            color = (0, 255, 0) if is_persistent else (255, 150, 0)
+
+            cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, 2)
             cv2.putText(
                 display_frame,
-                "Person",
-                (mirrored_x, y - 10),
+                f"{face.duration:.1f}s",
+                (x, y - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (0, 255, 0),
+                color,
                 2,
             )
 
         # Check and send alerts if enabled
         if alert_manager:
-            num_people = len(detections)
-            if alert_manager.should_alert(num_people):
+            if alert_manager.should_alert(num_persistent):
                 # Send alert with the current display frame (has boxes drawn)
-                alert_manager.send_alert(display_frame, num_people)
-            alert_manager.update_count(num_people)
+                persistent_faces = face_tracker.get_persistent_faces()
+                max_duration = (
+                    max(f.duration for f in persistent_faces) if persistent_faces else 0
+                )
+                alert_manager.send_alert(display_frame, num_persistent, max_duration)
+            alert_manager.update_count(num_persistent)
 
         # Calculate FPS
         fps_frame_count += 1
@@ -636,7 +661,7 @@ def main():
         # Display the count of detected people and FPS
         cv2.putText(
             display_frame,
-            f"People detected: {len(detections)}",
+            f"Detected: {len(tracked_faces)} | Persistent: {num_persistent}",
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,

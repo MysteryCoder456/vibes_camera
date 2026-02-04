@@ -42,12 +42,13 @@ class AlertManager(Protocol):
         """
         ...
 
-    def send_alert(self, frame, num_people: int) -> None:
+    def send_alert(self, frame, num_people: int, duration: float = 0.0) -> None:
         """Queue alert for async sending (non-blocking).
 
         Args:
             frame: OpenCV frame with detections drawn
             num_people: Number of people detected
+            duration: How long the face was present before alert (seconds)
         """
         ...
 
@@ -243,7 +244,7 @@ class DiscordAlertManager:
             if item is None:  # Shutdown signal
                 break
 
-            frame, num_people, timestamp = item
+            frame, num_people, timestamp, duration = item
 
             # Wait for connection if disconnected
             if self._connected_event and not self._connected_event.is_set():
@@ -259,16 +260,19 @@ class DiscordAlertManager:
                     continue
 
             # Send the alert
-            await self._send_with_retry(frame, num_people, timestamp)
+            await self._send_with_retry(frame, num_people, timestamp, duration)
             self._queue.task_done()
 
-    async def _send_with_retry(self, frame, num_people: int, timestamp: str):
+    async def _send_with_retry(
+        self, frame, num_people: int, timestamp: str, duration: float
+    ):
         """Send Discord DM with retry logic and exponential backoff.
 
         Args:
             frame: OpenCV frame (already copied)
             num_people: Number of people detected
             timestamp: Timestamp string for the alert
+            duration: How long the face was present before alert (seconds)
         """
         import discord
 
@@ -288,7 +292,7 @@ class DiscordAlertManager:
                     return
 
             try:
-                await self._send_dm(frame, num_people, timestamp)
+                await self._send_dm(frame, num_people, timestamp, duration)
                 return  # Success
             except (discord.errors.Forbidden, discord.errors.NotFound) as e:
                 # Don't retry on permission/not found errors
@@ -310,13 +314,16 @@ class DiscordAlertManager:
             f"discarding alert: {last_error}"
         )
 
-    async def _send_dm(self, frame, num_people: int, timestamp: str):
+    async def _send_dm(
+        self, frame, num_people: int, timestamp: str, duration: float
+    ):
         """Send a Discord DM using the persistent connection.
 
         Args:
             frame: OpenCV frame (already copied)
             num_people: Number of people detected
             timestamp: Timestamp string
+            duration: How long the face was present before alert (seconds)
 
         Raises:
             RuntimeError: If DM channel not initialized
@@ -333,7 +340,10 @@ class DiscordAlertManager:
         image_bytes.seek(0)
 
         message = (
-            f"**Security Alert**\nTime: {timestamp}\nPeople detected: {num_people}"
+            f"**Security Alert**\n"
+            f"Time: {timestamp}\n"
+            f"People detected: {num_people}\n"
+            f"Present for: {duration:.1f}s before alert"
         )
 
         await self._dm_channel.send(
@@ -365,7 +375,7 @@ class DiscordAlertManager:
 
         return True
 
-    def send_alert(self, frame, num_people: int) -> None:
+    def send_alert(self, frame, num_people: int, duration: float = 0.0) -> None:
         """Queue alert for async sending (non-blocking).
 
         Makes a copy of the frame since the original buffer may be reused.
@@ -373,13 +383,14 @@ class DiscordAlertManager:
         Args:
             frame: OpenCV frame with detections drawn
             num_people: Number of people detected
+            duration: How long the face was present before alert (seconds)
         """
         # Copy frame since original buffer gets reused
         frame_copy = frame.copy()
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         try:
-            self._queue.put_nowait((frame_copy, num_people, timestamp))
+            self._queue.put_nowait((frame_copy, num_people, timestamp, duration))
             # Update state immediately (alert is queued)
             self.last_alert_time = time.time()
             self.previous_count = num_people
