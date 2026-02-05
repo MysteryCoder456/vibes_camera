@@ -4,18 +4,24 @@ Uses multithreading to separate frame capture from face detection for better per
 """
 
 import argparse
+import logging
+import signal
 import threading
 import time
 
 import cv2
 
 from opencv_project.alerts import DiscordAlertManager, load_alert_config
+from opencv_project.logging_config import setup_logging
 from opencv_project.recognition import FaceRecognizer
 from opencv_project.tracking import FaceTracker
 
 
 # Configuration flags
 USE_GPU = False  # Default to CPU mode; use --use-gpu flag to enable GPU acceleration
+
+# Logger will be initialized in main()
+logger: logging.Logger | None = None
 
 
 def check_opencl_support():
@@ -24,44 +30,42 @@ def check_opencl_support():
     Returns:
         bool: True if OpenCL is available and enabled, False otherwise.
     """
-    print("\n=== OpenCL Status ===")
+    logger.info("=== OpenCL Status ===")
 
     have_opencl = cv2.ocl.haveOpenCL()
-    print(f"OpenCL available: {have_opencl}")
+    logger.info(f"OpenCL available: {have_opencl}")
 
     if not have_opencl:
-        print("OpenCL is not available. GPU acceleration will not work.")
-        print("This may be due to:")
-        print("  - OpenCV was built without OpenCL support")
-        print("  - No OpenCL-compatible device found")
-        print("=====================\n")
+        logger.warning("OpenCL is not available. GPU acceleration will not work.")
+        logger.warning("This may be due to:")
+        logger.warning("  - OpenCV was built without OpenCL support")
+        logger.warning("  - No OpenCL-compatible device found")
         return False
 
     # Enable OpenCL if available
     cv2.ocl.setUseOpenCL(True)
     use_opencl = cv2.ocl.useOpenCL()
-    print(f"OpenCL enabled: {use_opencl}")
+    logger.info(f"OpenCL enabled: {use_opencl}")
 
     if use_opencl:
         try:
             device = cv2.ocl.Device.getDefault()
-            print(f"Device name: {device.name()}")
-            print("Device type: ", end="")
+            logger.info(f"Device name: {device.name()}")
             dtype = device.type()
             if dtype == cv2.ocl.Device_TYPE_GPU:
-                print("GPU")
+                device_type = "GPU"
             elif dtype == cv2.ocl.Device_TYPE_CPU:
-                print("CPU")
+                device_type = "CPU"
             elif dtype == cv2.ocl.Device_TYPE_ACCELERATOR:
-                print("Accelerator")
+                device_type = "Accelerator"
             else:
-                print(f"Unknown ({dtype})")
-            print(f"Device available: {device.available()}")
-            print(f"OpenCL version: {device.OpenCLVersion()}")
+                device_type = f"Unknown ({dtype})"
+            logger.info(f"Device type: {device_type}")
+            logger.info(f"Device available: {device.available()}")
+            logger.info(f"OpenCL version: {device.OpenCLVersion()}")
         except Exception as e:
-            print(f"Could not get device info: {e}")
+            logger.warning(f"Could not get device info: {e}")
 
-    print("=====================\n")
     return use_opencl
 
 
@@ -95,14 +99,13 @@ def select_camera(cameras):
     Returns:
         int: Selected camera index, or None if cancelled
     """
-    print(f"\nFound {len(cameras)} camera(s):\n")
+    logger.info(f"Found {len(cameras)} camera(s):")
     for idx, width, height, fps in cameras:
-        print(f"  [{idx}] Camera {idx}: {width}x{height} @ {fps:.0f} FPS")
-    print()
+        logger.info(f"  [{idx}] Camera {idx}: {width}x{height} @ {fps:.0f} FPS")
 
     # Auto-select if only one camera
     if len(cameras) == 1:
-        print(f"Auto-selecting Camera {cameras[0][0]} (only one available)")
+        logger.info(f"Auto-selecting Camera {cameras[0][0]} (only one available)")
         return cameras[0][0]
 
     # Find default camera (prefer index 0 if available, else first in list)
@@ -125,11 +128,11 @@ def select_camera(cameras):
             choice_idx = int(choice)
             if choice_idx in valid_indices:
                 return choice_idx
-            print(f"Invalid selection. Choose from: {valid_indices}")
+            logger.warning(f"Invalid selection. Choose from: {valid_indices}")
         except ValueError:
-            print("Please enter a valid number.")
+            logger.warning("Please enter a valid number.")
         except KeyboardInterrupt:
-            print("\nCancelled.")
+            logger.info("Cancelled.")
             return None
 
 
@@ -185,6 +188,18 @@ def parse_args():
         type=int,
         default=300,
         help="Suppress alerts for N seconds after owner was last seen (default: 300 = 5 min)",
+    )
+    parser.add_argument(
+        "--display-feed",
+        action="store_true",
+        help="Display the camera feed window (default: headless mode)",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level (default: INFO)",
     )
     return parser.parse_args()
 
@@ -499,10 +514,10 @@ def run_enrollment(cap, frontal_cascade, recognizer, tolerance):
     Returns:
         0 on success, 1 on failure/cancellation
     """
-    print("\n=== Face Enrollment Mode ===")
-    print("Position your face in the camera frame.")
-    print("15 images will be captured with 3-second intervals.")
-    print("Press 'q' to cancel.\n")
+    logger.info("=== Face Enrollment Mode ===")
+    logger.info("Position your face in the camera frame.")
+    logger.info("15 images will be captured with 3-second intervals.")
+    logger.info("Press 'q' to cancel.")
 
     encodings = []
     target_captures = 15
@@ -611,7 +626,7 @@ def run_enrollment(cap, frontal_cascade, recognizer, tolerance):
                     encodings.append(encoding)
                     captures_done += 1
                     last_capture_time = time.time()
-                    print(f"  Captured image {captures_done}/{target_captures}")
+                    logger.info(f"Captured image {captures_done}/{target_captures}")
 
                     # Show capture feedback
                     cv2.putText(
@@ -649,17 +664,17 @@ def run_enrollment(cap, frontal_cascade, recognizer, tolerance):
         cv2.imshow("Face Enrollment", display_frame)
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
-            print("\nEnrollment cancelled.")
+            logger.info("Enrollment cancelled.")
             cv2.destroyAllWindows()
             return 1
 
     # Save encodings
-    print(f"\nCaptured {len(encodings)} images successfully!")
-    print("Saving owner encoding...")
+    logger.info(f"Captured {len(encodings)} images successfully!")
+    logger.info("Saving owner encoding...")
     recognizer.save_owner(encodings)
-    print(f"Owner enrolled and saved to: {recognizer.get_owner_file_path()}")
-    print(f"Tolerance setting: {tolerance}")
-    print("\nYou can now run with --recognize to enable face recognition.")
+    logger.info(f"Owner enrolled and saved to: {recognizer.get_owner_file_path()}")
+    logger.info(f"Tolerance setting: {tolerance}")
+    logger.info("You can now run with --recognize to enable face recognition.")
 
     cv2.destroyAllWindows()
     return 0
@@ -667,10 +682,24 @@ def run_enrollment(cap, frontal_cascade, recognizer, tolerance):
 
 def main():
     """Capture and display camera frames with face detection using Haar cascade."""
-    global USE_GPU
+    global USE_GPU, logger
 
     # Parse command-line arguments
     args = parse_args()
+
+    # Setup logging
+    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    logger = setup_logging(level=log_level)
+
+    # Signal handler for graceful shutdown (Ctrl+C)
+    shutdown_requested = threading.Event()
+
+    def signal_handler(signum, frame):
+        logger.info("Shutdown requested (Ctrl+C)")
+        shutdown_requested.set()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     # Enable GPU if --use-gpu flag is set
     if args.use_gpu:
@@ -680,37 +709,37 @@ def main():
     if USE_GPU:
         opencl_available = check_opencl_support()
         if not opencl_available:
-            print("Warning: GPU mode requested but OpenCL is not available.")
-            print("Falling back to CPU mode.\n")
+            logger.warning("GPU mode requested but OpenCL is not available.")
+            logger.warning("Falling back to CPU mode.")
             USE_GPU = False
 
     # Camera selection
-    print("\n=== Camera Selection ===")
+    logger.info("=== Camera Selection ===")
 
     if args.camera is not None:
         # Use camera specified via CLI argument
         camera_idx = args.camera
-        print(f"Using camera {camera_idx} (from --camera argument)")
+        logger.info(f"Using camera {camera_idx} (from --camera argument)")
     else:
         # Interactive selection
-        print("Scanning for available cameras...")
+        logger.info("Scanning for available cameras...")
         cameras = list_available_cameras()
 
         if not cameras:
-            print("No cameras found!")
+            logger.error("No cameras found!")
             return 1
 
         camera_idx = select_camera(cameras)
         if camera_idx is None:
             return 1
 
-    print(f"\nOpening Camera {camera_idx}...")
+    logger.info(f"Opening Camera {camera_idx}...")
 
     # Open selected camera
     cap = cv2.VideoCapture(camera_idx)
 
     if not cap.isOpened():
-        print(f"Error: Could not open camera {camera_idx}")
+        logger.error(f"Could not open camera {camera_idx}")
         return 1
 
     # Load the Haar cascade classifiers for frontal and profile face detection
@@ -722,7 +751,7 @@ def main():
     )
 
     if frontal_cascade.empty() or profile_cascade.empty():
-        print("Error: Could not load Haar cascade classifiers")
+        logger.error("Could not load Haar cascade classifiers")
         cap.release()
         return 1
 
@@ -736,17 +765,15 @@ def main():
     # Initialize face recognizer - enabled automatically if owner is enrolled
     recognizer = FaceRecognizer(tolerance=args.tolerance)
     if recognizer.has_owner():
-        print("\n=== Face Recognition ===")
-        print(f"Owner loaded from: {recognizer.get_owner_file_path()}")
-        print(f"Recognition tolerance: {args.tolerance}")
-        print("Alerts will only trigger for unknown faces.")
-        print("========================")
+        logger.info("=== Face Recognition ===")
+        logger.info(f"Owner loaded from: {recognizer.get_owner_file_path()}")
+        logger.info(f"Recognition tolerance: {args.tolerance}")
+        logger.info("Alerts will only trigger for unknown faces.")
     else:
-        print("\n=== No Owner Enrolled ===")
-        print("Face recognition disabled - no owner enrolled.")
-        print("Run with --enroll to set up face recognition.")
-        print("Alerts will trigger for all detected faces.")
-        print("=========================")
+        logger.info("=== No Owner Enrolled ===")
+        logger.info("Face recognition disabled - no owner enrolled.")
+        logger.info("Run with --enroll to set up face recognition.")
+        logger.info("Alerts will trigger for all detected faces.")
         recognizer = None  # Disable recognition if no owner
 
     # Scale factor for resizing frame during detection (0.5 = half resolution)
@@ -774,36 +801,39 @@ def main():
     # Initialize alert manager if alerts are enabled
     alert_manager = None
     if args.alerts:
-        print("\n=== Discord Alerts ===")
+        logger.info("=== Discord Alerts ===")
         config = load_alert_config()
         if config:
             try:
-                print("Connecting to Discord...")
+                logger.info("Connecting to Discord...")
                 alert_manager = DiscordAlertManager(
                     config, cooldown_seconds=args.cooldown
                 )
-                print(f"Discord DM alerts enabled (cooldown: {args.cooldown}s)")
+                logger.info(f"Discord DM alerts enabled (cooldown: {args.cooldown}s)")
             except Exception as e:
-                print(f"Failed to connect to Discord: {e}")
-                print("Exiting...")
+                logger.error(f"Failed to connect to Discord: {e}")
+                logger.error("Exiting...")
                 state.stop()
                 cap.release()
                 return 1
         else:
-            print("Alerts requested but credentials not configured.")
-            print("Exiting...")
+            logger.error("Alerts requested but credentials not configured.")
+            logger.error("Exiting...")
             state.stop()
             cap.release()
             return 1
-        print("======================")
 
     # Initialize face tracker for persistence detection
     face_tracker = FaceTracker(persistence_threshold=args.persistence)
 
-    print("\nCamera opened successfully. Press 'q' to quit.")
-    print("Detecting faces (frontal and profile) using Haar cascade classifiers...")
-    print("Running with multithreading enabled.")
-    print(f"GPU acceleration (UMat): {'enabled' if USE_GPU else 'disabled'}")
+    logger.info(
+        "Camera opened successfully. Press 'q' to quit (if display enabled) or Ctrl+C."
+    )
+    logger.info(
+        "Detecting faces (frontal and profile) using Haar cascade classifiers..."
+    )
+    logger.info("Running with multithreading enabled.")
+    logger.info(f"GPU acceleration (UMat): {'enabled' if USE_GPU else 'disabled'}")
 
     # FPS calculation variables
     fps_start_time = time.time()
@@ -811,10 +841,22 @@ def main():
     fps = 0.0
 
     # Track when owner was last seen (for alert suppression)
+    # Only triggers after owner is present for 5+ seconds consecutively
     last_owner_seen_time: float | None = None
+    OWNER_PRESENCE_THRESHOLD = 5.0  # seconds owner must be present to trigger grace
+
+    # Track which faces have been logged (to avoid duplicate logs per frame)
+    # Maps face_id -> identity that was logged
+    logged_faces: dict[int, str] = {}
+    # Track previous frame's face IDs to detect when faces leave
+    previous_face_ids: set[int] = set()
+    # Track if we already logged alert suppression (to avoid spamming every frame)
+    alert_suppression_logged = False
+    # Track if grace period was logged for current owner presence (avoid spam)
+    grace_period_logged_for_face: int | None = None
 
     # Main display loop
-    while state.running:
+    while state.running and not shutdown_requested.is_set():
         frame = state.get_frame()
         if frame is None:
             time.sleep(0.001)
@@ -876,22 +918,52 @@ def main():
         COLOR_PERSISTENT = (0, 255, 0)  # Green (no recognition mode)
         COLOR_NOT_PERSISTENT = (255, 150, 0)  # Blue (no recognition mode)
 
-        # Draw rectangles around tracked faces
+        # Track face states (needed for alerts even in headless mode)
         num_unknown = 0
+        current_face_ids: set[int] = set()
+
         for face in tracked_faces:
             x, y, w, h = face.bbox
+            current_face_ids.add(face.id)
 
             if recognizer:
                 # Recognition mode: color based on identity
                 if face.identity == "owner":
                     color = COLOR_OWNER
                     label = "Owner"
-                    # Update last seen time for alert suppression
-                    last_owner_seen_time = time.time()
+
+                    # Log when face is first identified as owner
+                    if logged_faces.get(face.id) != "owner":
+                        logger.info(
+                            f"Face #{face.id} identified as OWNER "
+                            f"(tracking for {face.duration:.1f}s)"
+                        )
+                        logged_faces[face.id] = "owner"
+
+                    # Only update grace period if owner present for 5+ seconds
+                    if face.duration >= OWNER_PRESENCE_THRESHOLD:
+                        # Log grace period only once per owner face presence
+                        if grace_period_logged_for_face != face.id:
+                            logger.info(
+                                f"Owner grace period activated - owner present for "
+                                f"{face.duration:.1f}s, alerts paused for {args.owner_grace}s"
+                            )
+                            grace_period_logged_for_face = face.id
+                        last_owner_seen_time = time.time()
+
                 elif face.identity == "unknown":
                     color = COLOR_UNKNOWN
                     label = "Unknown"
                     num_unknown += 1
+
+                    # Log when face is first identified as unknown
+                    if logged_faces.get(face.id) != "unknown":
+                        logger.info(
+                            f"Face #{face.id} identified as UNKNOWN "
+                            f"(tracking for {face.duration:.1f}s)"
+                        )
+                        logged_faces[face.id] = "unknown"
+
                 else:  # pending
                     color = COLOR_PENDING
                     label = "..."
@@ -901,16 +973,29 @@ def main():
                 color = COLOR_PERSISTENT if is_persistent else COLOR_NOT_PERSISTENT
                 label = f"{face.duration:.1f}s"
 
-            cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(
-                display_frame,
-                label,
-                (x, y - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                2,
-            )
+            # Only draw if display is enabled OR alerts are enabled (for alert images)
+            if args.display_feed or alert_manager:
+                cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(
+                    display_frame,
+                    label,
+                    (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    2,
+                )
+
+        # Log faces that left the frame
+        for face_id in previous_face_ids - current_face_ids:
+            identity = logged_faces.pop(face_id, "unknown")
+            logger.info(f"Face #{face_id} ({identity}) left frame")
+            # Reset grace period log flag if this owner face left
+            if face_id == grace_period_logged_for_face:
+                grace_period_logged_for_face = None
+
+        # Update previous face IDs for next iteration
+        previous_face_ids = current_face_ids
 
         # Check and send alerts if enabled
         if alert_manager:
@@ -923,18 +1008,31 @@ def main():
             if recognizer:
                 # Recognition mode: only alert for persistent unknown faces
                 num_persistent_unknown = face_tracker.get_persistent_unknown_count()
-                if not owner_recently_seen and alert_manager.should_alert(
-                    num_persistent_unknown
-                ):
-                    persistent_unknown = face_tracker.get_persistent_unknown_faces()
-                    max_duration = (
-                        max(f.duration for f in persistent_unknown)
-                        if persistent_unknown
-                        else 0
-                    )
-                    alert_manager.send_alert(
-                        display_frame, num_persistent_unknown, max_duration
-                    )
+                if alert_manager.should_alert(num_persistent_unknown):
+                    if owner_recently_seen:
+                        # Log suppressed alert (only once per suppression period)
+                        if not alert_suppression_logged:
+                            time_since = time.time() - last_owner_seen_time  # type: ignore
+                            logger.info(
+                                f"Alert suppressed - owner seen {time_since:.0f}s ago, "
+                                f"{num_persistent_unknown} unknown face(s) detected"
+                            )
+                            alert_suppression_logged = True
+                    else:
+                        persistent_unknown = face_tracker.get_persistent_unknown_faces()
+                        max_duration = (
+                            max(f.duration for f in persistent_unknown)
+                            if persistent_unknown
+                            else 0
+                        )
+                        alert_manager.send_alert(
+                            display_frame, num_persistent_unknown, max_duration
+                        )
+                        # Reset suppression flag when an alert is actually sent
+                        alert_suppression_logged = False
+                else:
+                    # No alert needed, reset suppression flag for next time
+                    alert_suppression_logged = False
                 alert_manager.update_count(num_persistent_unknown)
             else:
                 # No recognition: alert for all persistent faces
@@ -959,74 +1057,79 @@ def main():
             fps_frame_count = 0
             fps_start_time = time.time()
 
-        # Display status text
-        if recognizer:
-            num_persistent_unknown = face_tracker.get_persistent_unknown_count()
-            status_text = (
-                f"Detected: {len(tracked_faces)} | "
-                f"Unknown: {num_unknown} | "
-                f"Persistent: {num_persistent_unknown}"
-            )
-        else:
-            num_persistent = face_tracker.get_persistent_count()
-            status_text = (
-                f"Detected: {len(tracked_faces)} | Persistent: {num_persistent}"
-            )
-
-        cv2.putText(
-            display_frame,
-            status_text,
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 0, 255),
-            2,
-        )
-        cv2.putText(
-            display_frame,
-            f"FPS: {fps:.1f}",
-            (10, 60),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 0, 255),
-            2,
-        )
-
-        # Display owner grace period status (only in recognition mode with alerts)
-        if recognizer and alert_manager:
-            if last_owner_seen_time is not None:
-                time_since_owner = time.time() - last_owner_seen_time
-                if time_since_owner < args.owner_grace:
-                    # Owner recently seen - alerts suppressed
-                    remaining = int(args.owner_grace - time_since_owner)
-                    mins, secs = divmod(remaining, 60)
-                    grace_text = f"Owner seen {int(time_since_owner)}s ago - alerts paused ({mins}m {secs}s left)"
-                    grace_color = (0, 180, 0)  # Green
-                else:
-                    # Grace period expired - alerts active
-                    mins_ago = int(time_since_owner // 60)
-                    grace_text = f"Owner last seen {mins_ago}m ago - alerts active"
-                    grace_color = (0, 165, 255)  # Orange
+        # Draw status overlays (only if display is enabled)
+        if args.display_feed:
+            # Display status text
+            if recognizer:
+                num_persistent_unknown = face_tracker.get_persistent_unknown_count()
+                status_text = (
+                    f"Detected: {len(tracked_faces)} | "
+                    f"Unknown: {num_unknown} | "
+                    f"Persistent: {num_persistent_unknown}"
+                )
             else:
-                grace_text = "Owner not seen - alerts active"
-                grace_color = (0, 165, 255)  # Orange
+                num_persistent = face_tracker.get_persistent_count()
+                status_text = (
+                    f"Detected: {len(tracked_faces)} | Persistent: {num_persistent}"
+                )
 
             cv2.putText(
                 display_frame,
-                grace_text,
-                (10, 90),
+                status_text,
+                (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                grace_color,
-                1,
+                0.7,
+                (0, 0, 255),
+                2,
+            )
+            cv2.putText(
+                display_frame,
+                f"FPS: {fps:.1f}",
+                (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2,
             )
 
-        # Display the frame
-        cv2.imshow("Camera Feed - Face Detection", display_frame)
+            # Display owner grace period status (only in recognition mode with alerts)
+            if recognizer and alert_manager:
+                if last_owner_seen_time is not None:
+                    time_since_owner = time.time() - last_owner_seen_time
+                    if time_since_owner < args.owner_grace:
+                        # Owner recently seen - alerts suppressed
+                        remaining = int(args.owner_grace - time_since_owner)
+                        mins, secs = divmod(remaining, 60)
+                        grace_text = f"Owner seen {int(time_since_owner)}s ago - alerts paused ({mins}m {secs}s left)"
+                        grace_color = (0, 180, 0)  # Green
+                    else:
+                        # Grace period expired - alerts active
+                        mins_ago = int(time_since_owner // 60)
+                        grace_text = f"Owner last seen {mins_ago}m ago - alerts active"
+                        grace_color = (0, 165, 255)  # Orange
+                else:
+                    grace_text = "Owner not seen - alerts active"
+                    grace_color = (0, 165, 255)  # Orange
 
-        # Wait for 1ms and check if 'q' was pressed
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+                cv2.putText(
+                    display_frame,
+                    grace_text,
+                    (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    grace_color,
+                    1,
+                )
+
+            # Display the frame
+            cv2.imshow("Camera Feed - Face Detection", display_frame)
+
+            # Wait for 1ms and check if 'q' was pressed
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+        else:
+            # Headless mode - small sleep to prevent CPU spinning
+            time.sleep(0.001)
 
     # Signal threads to stop and wait for them
     state.stop()
@@ -1039,7 +1142,10 @@ def main():
 
     # Release resources
     cap.release()
-    cv2.destroyAllWindows()
+    if args.display_feed:
+        cv2.destroyAllWindows()
+
+    logger.info("Shutdown complete")
     return 0
 
 

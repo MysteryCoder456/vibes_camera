@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import io
+import logging
 import os
 import queue
 import threading
@@ -21,6 +22,9 @@ from dotenv import load_dotenv
 
 if TYPE_CHECKING:
     import discord
+
+# Get logger from opencv_project
+logger = logging.getLogger("opencv_project")
 
 
 class AlertManager(Protocol):
@@ -88,8 +92,8 @@ def load_alert_config():
             config[var] = value
 
     if missing:
-        print(f"Warning: Missing environment variables: {', '.join(missing)}")
-        print("Please configure .env file (see .env.example)")
+        logger.warning(f"Missing environment variables: {', '.join(missing)}")
+        logger.warning("Please configure .env file (see .env.example)")
         return None
 
     return config
@@ -193,7 +197,9 @@ class DiscordAlertManager:
                 user = await self._client.fetch_user(user_id)
                 self._dm_channel = await user.create_dm()
                 self._connected_event.set()
-                print(f"Discord bot connected, DM channel ready for user {user_id}")
+                logger.info(
+                    f"Discord bot connected, DM channel ready for user {user_id}"
+                )
                 self._ready_event.set()  # Unblock constructor (first connect only)
             except Exception as e:
                 if self._init_error is None:
@@ -203,14 +209,14 @@ class DiscordAlertManager:
         @self._client.event
         async def on_disconnect():
             """Called when bot disconnects from Discord."""
-            print("Discord bot disconnected, waiting for reconnection...")
+            logger.warning("Discord bot disconnected, waiting for reconnection...")
             if self._connected_event:
                 self._connected_event.clear()
 
         @self._client.event
         async def on_resumed():
             """Called when bot reconnects after a disconnect."""
-            print("Discord bot reconnected")
+            logger.info("Discord bot reconnected")
             if self._connected_event:
                 self._connected_event.set()
 
@@ -248,14 +254,16 @@ class DiscordAlertManager:
 
             # Wait for connection if disconnected
             if self._connected_event and not self._connected_event.is_set():
-                print("Waiting for Discord reconnection before sending alert...")
+                logger.warning(
+                    "Waiting for Discord reconnection before sending alert..."
+                )
                 try:
                     await asyncio.wait_for(
                         self._connected_event.wait(),
                         timeout=self.RECONNECT_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
-                    print("Reconnection timeout, discarding alert")
+                    logger.warning("Reconnection timeout, discarding alert")
                     self._queue.task_done()
                     continue
 
@@ -281,14 +289,16 @@ class DiscordAlertManager:
         for attempt in range(self.MAX_RETRIES):
             # Check if still connected before each attempt
             if self._connected_event and not self._connected_event.is_set():
-                print("Disconnected during retry, waiting for reconnection...")
+                logger.warning("Disconnected during retry, waiting for reconnection...")
                 try:
                     await asyncio.wait_for(
                         self._connected_event.wait(),
                         timeout=self.RECONNECT_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
-                    print("Reconnection timeout during retry, discarding alert")
+                    logger.warning(
+                        "Reconnection timeout during retry, discarding alert"
+                    )
                     return
 
             try:
@@ -296,20 +306,20 @@ class DiscordAlertManager:
                 return  # Success
             except (discord.errors.Forbidden, discord.errors.NotFound) as e:
                 # Don't retry on permission/not found errors
-                print(f"Discord alert failed (not retrying): {e}")
+                logger.error(f"Discord alert failed (not retrying): {e}")
                 return
             except Exception as e:
                 last_error = e
                 if attempt < self.MAX_RETRIES - 1:
                     delay = self.BASE_RETRY_DELAY * (2**attempt)
-                    print(
+                    logger.warning(
                         f"Discord alert failed (attempt {attempt + 1}/{self.MAX_RETRIES}), "
                         f"retrying in {delay:.1f}s: {e}"
                     )
                     await asyncio.sleep(delay)
 
         # All retries exhausted
-        print(
+        logger.error(
             f"Discord alert failed after {self.MAX_RETRIES} attempts, "
             f"discarding alert: {last_error}"
         )
@@ -349,7 +359,7 @@ class DiscordAlertManager:
             file=discord.File(image_bytes, filename="alert.jpg"),
         )
 
-        print("Discord alert sent")
+        logger.info("Discord alert sent")
 
     def should_alert(self, current_count: int) -> bool:
         """Check if alert should be sent.
@@ -393,7 +403,7 @@ class DiscordAlertManager:
             self.last_alert_time = time.time()
             self.previous_count = num_people
         except queue.Full:
-            print("Alert queue full, discarding alert")
+            logger.warning("Alert queue full, discarding alert")
 
     def update_count(self, current_count: int) -> None:
         """Update previous count (call each frame).
@@ -423,4 +433,4 @@ class DiscordAlertManager:
 
         self._worker_thread.join(timeout=5)
         if self._worker_thread.is_alive():
-            print("Warning: Discord alert worker thread did not shut down cleanly")
+            logger.warning("Discord alert worker thread did not shut down cleanly")
