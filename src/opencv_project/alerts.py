@@ -314,9 +314,7 @@ class DiscordAlertManager:
             f"discarding alert: {last_error}"
         )
 
-    async def _send_dm(
-        self, frame, num_people: int, timestamp: str, duration: float
-    ):
+    async def _send_dm(self, frame, num_people: int, timestamp: str, duration: float):
         """Send a Discord DM using the persistent connection.
 
         Args:

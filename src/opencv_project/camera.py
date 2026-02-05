@@ -180,6 +180,12 @@ def parse_args():
         default=0.6,
         help="Face recognition tolerance (lower=stricter, default: 0.6)",
     )
+    parser.add_argument(
+        "--owner-grace",
+        type=int,
+        default=300,
+        help="Suppress alerts for N seconds after owner was last seen (default: 300 = 5 min)",
+    )
     return parser.parse_args()
 
 
@@ -804,6 +810,9 @@ def main():
     fps_frame_count = 0
     fps = 0.0
 
+    # Track when owner was last seen (for alert suppression)
+    last_owner_seen_time: float | None = None
+
     # Main display loop
     while state.running:
         frame = state.get_frame()
@@ -877,6 +886,8 @@ def main():
                 if face.identity == "owner":
                     color = COLOR_OWNER
                     label = "Owner"
+                    # Update last seen time for alert suppression
+                    last_owner_seen_time = time.time()
                 elif face.identity == "unknown":
                     color = COLOR_UNKNOWN
                     label = "Unknown"
@@ -903,10 +914,18 @@ def main():
 
         # Check and send alerts if enabled
         if alert_manager:
+            # Check if owner was recently seen (suppress alerts during grace period)
+            owner_recently_seen = (
+                last_owner_seen_time is not None
+                and (time.time() - last_owner_seen_time) < args.owner_grace
+            )
+
             if recognizer:
                 # Recognition mode: only alert for persistent unknown faces
                 num_persistent_unknown = face_tracker.get_persistent_unknown_count()
-                if alert_manager.should_alert(num_persistent_unknown):
+                if not owner_recently_seen and alert_manager.should_alert(
+                    num_persistent_unknown
+                ):
                     persistent_unknown = face_tracker.get_persistent_unknown_faces()
                     max_duration = (
                         max(f.duration for f in persistent_unknown)
@@ -950,7 +969,9 @@ def main():
             )
         else:
             num_persistent = face_tracker.get_persistent_count()
-            status_text = f"Detected: {len(tracked_faces)} | Persistent: {num_persistent}"
+            status_text = (
+                f"Detected: {len(tracked_faces)} | Persistent: {num_persistent}"
+            )
 
         cv2.putText(
             display_frame,
@@ -970,6 +991,35 @@ def main():
             (0, 0, 255),
             2,
         )
+
+        # Display owner grace period status (only in recognition mode with alerts)
+        if recognizer and alert_manager:
+            if last_owner_seen_time is not None:
+                time_since_owner = time.time() - last_owner_seen_time
+                if time_since_owner < args.owner_grace:
+                    # Owner recently seen - alerts suppressed
+                    remaining = int(args.owner_grace - time_since_owner)
+                    mins, secs = divmod(remaining, 60)
+                    grace_text = f"Owner seen {int(time_since_owner)}s ago - alerts paused ({mins}m {secs}s left)"
+                    grace_color = (0, 180, 0)  # Green
+                else:
+                    # Grace period expired - alerts active
+                    mins_ago = int(time_since_owner // 60)
+                    grace_text = f"Owner last seen {mins_ago}m ago - alerts active"
+                    grace_color = (0, 165, 255)  # Orange
+            else:
+                grace_text = "Owner not seen - alerts active"
+                grace_color = (0, 165, 255)  # Orange
+
+            cv2.putText(
+                display_frame,
+                grace_text,
+                (10, 90),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                grace_color,
+                1,
+            )
 
         # Display the frame
         cv2.imshow("Camera Feed - Face Detection", display_frame)
