@@ -35,16 +35,16 @@ poetry install
 
 ```bash
 # Run with default settings (interactive camera selection)
-poetry run python -m opencv_project.camera
+poetry run python -m vibes_camera.camera
 
 # Specify camera directly
-poetry run python -m opencv_project.camera --camera 0
+poetry run python -m vibes_camera.camera --camera 0
 
 # Enable GPU acceleration
-poetry run python -m opencv_project.camera --use-gpu
+poetry run python -m vibes_camera.camera --use-gpu
 
 # Show all options
-poetry run python -m opencv_project.camera --help
+poetry run python -m vibes_camera.camera --help
 ```
 
 ## Discord Alerts Setup
@@ -95,13 +95,13 @@ DISCORD_USER_ID=your_user_id
 
 ```bash
 # Enable alerts with default 5-minute cooldown
-poetry run python -m opencv_project.camera --alerts
+poetry run python -m vibes_camera.camera --alerts
 
 # Custom cooldown (e.g., 60 seconds)
-poetry run python -m opencv_project.camera --alerts --cooldown 60
+poetry run python -m vibes_camera.camera --alerts --cooldown 60
 
 # Combined with other options
-poetry run python -m opencv_project.camera -c 0 --alerts --cooldown 120 --use-gpu
+poetry run python -m vibes_camera.camera -c 0 --alerts --cooldown 120 --use-gpu
 ```
 
 ## CLI Options

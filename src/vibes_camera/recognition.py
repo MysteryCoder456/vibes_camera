@@ -24,7 +24,7 @@ def _get_face_recognition():
     return _face_recognition
 
 
-CONFIG_DIR = Path.home() / ".config" / "opencv_project"
+CONFIG_DIR = Path.home() / ".config" / "vibes_camera"
 OWNER_FILE = CONFIG_DIR / "owner.pkl"
 
 

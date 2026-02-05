@@ -23,8 +23,8 @@ from dotenv import load_dotenv
 if TYPE_CHECKING:
     import discord
 
-# Get logger from opencv_project
-logger = logging.getLogger("opencv_project")
+# Get logger from vibes_camera
+logger = logging.getLogger("vibes_camera")
 
 
 class AlertManager(Protocol):

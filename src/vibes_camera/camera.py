@@ -11,10 +11,10 @@ import time
 
 import cv2
 
-from opencv_project.alerts import DiscordAlertManager, load_alert_config
-from opencv_project.logging_config import setup_logging
-from opencv_project.recognition import FaceRecognizer
-from opencv_project.tracking import FaceTracker
+from vibes_camera.alerts import DiscordAlertManager, load_alert_config
+from vibes_camera.logging_config import setup_logging
+from vibes_camera.recognition import FaceRecognizer
+from vibes_camera.tracking import FaceTracker
 
 
 # Configuration flags

@@ -1,7 +1,7 @@
-"""Logging configuration for opencv_project.
+"""Logging configuration for vibes_camera.
 
 Sets up logging with both console and file handlers.
-Logs are saved daily to ~/.config/opencv_project/logs/YYYY-MM-DD.log
+Logs are saved daily to ~/.config/vibes_camera/logs/YYYY-MM-DD.log
 
 File handler: Logs at specified level (default INFO) - captures all events
 Console handler: Only WARNING and above - keeps terminal clean
@@ -11,7 +11,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "opencv_project"
+CONFIG_DIR = Path.home() / ".config" / "vibes_camera"
 LOGS_DIR = CONFIG_DIR / "logs"
 
 # Custom formatter with 12-hour AM/PM time
@@ -52,7 +52,7 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     log_file = LOGS_DIR / f"{date.today().isoformat()}.log"
 
     # Get or create logger
-    logger = logging.getLogger("opencv_project")
+    logger = logging.getLogger("vibes_camera")
     logger.setLevel(level)
 
     # Clear existing handlers (in case setup_logging is called multiple times)
@@ -80,9 +80,9 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
 
 
 def get_logger() -> logging.Logger:
-    """Get the opencv_project logger.
+    """Get the vibes_camera logger.
 
     Returns:
-        The opencv_project logger instance
+        The vibes_camera logger instance
     """
-    return logging.getLogger("opencv_project")
+    return logging.getLogger("vibes_camera")
