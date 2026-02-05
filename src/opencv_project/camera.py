@@ -10,6 +10,7 @@ import time
 import cv2
 
 from opencv_project.alerts import DiscordAlertManager, load_alert_config
+from opencv_project.recognition import FaceRecognizer
 from opencv_project.tracking import FaceTracker
 
 
@@ -167,6 +168,17 @@ def parse_args():
         type=float,
         default=1.0,
         help="Seconds a face must be present before alerting (default: 1.0)",
+    )
+    parser.add_argument(
+        "--enroll",
+        action="store_true",
+        help="Enroll owner face (captures 15 images over ~45 seconds)",
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=0.6,
+        help="Face recognition tolerance (lower=stricter, default: 0.6)",
     )
     return parser.parse_args()
 
@@ -466,6 +478,187 @@ def detection_thread(state, frontal_cascade, profile_cascade, detection_scale=0.
         state.set_detections(merged_faces)
 
 
+def run_enrollment(cap, frontal_cascade, recognizer, tolerance):
+    """Run the face enrollment process.
+
+    Captures 15 images of the owner's face with 3-second intervals between each.
+    Shows countdown timer and capture feedback on screen.
+
+    Args:
+        cap: OpenCV VideoCapture object
+        frontal_cascade: Haar cascade for frontal face detection
+        recognizer: FaceRecognizer instance
+        tolerance: Recognition tolerance value
+
+    Returns:
+        0 on success, 1 on failure/cancellation
+    """
+    print("\n=== Face Enrollment Mode ===")
+    print("Position your face in the camera frame.")
+    print("15 images will be captured with 3-second intervals.")
+    print("Press 'q' to cancel.\n")
+
+    encodings = []
+    target_captures = 15
+    capture_interval = 3.0  # seconds between captures
+
+    last_capture_time = time.time() - capture_interval  # Allow immediate first capture
+    captures_done = 0
+
+    while captures_done < target_captures:
+        ret, frame = cap.read()
+        if not ret:
+            time.sleep(0.01)
+            continue
+
+        # Mirror frame for display
+        display_frame = cv2.flip(frame, 1)
+        frame_height, frame_width = display_frame.shape[:2]
+
+        # Convert to grayscale for face detection
+        gray = cv2.cvtColor(display_frame, cv2.COLOR_BGR2GRAY)
+
+        # Detect faces
+        faces = frontal_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.15,
+            minNeighbors=8,
+            minSize=(80, 80),
+        )
+
+        time_since_capture = time.time() - last_capture_time
+        time_until_capture = max(0, capture_interval - time_since_capture)
+
+        # Draw status text
+        status_text = f"Enrollment: {captures_done}/{target_captures}"
+        cv2.putText(
+            display_frame,
+            status_text,
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 0, 255),
+            2,
+        )
+
+        if len(faces) == 0:
+            # No face detected
+            cv2.putText(
+                display_frame,
+                "No face detected - position yourself in frame",
+                (10, 70),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 255),
+                2,
+            )
+        elif len(faces) > 1:
+            # Multiple faces detected
+            cv2.putText(
+                display_frame,
+                "Multiple faces detected - only one person please",
+                (10, 70),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 255),
+                2,
+            )
+            # Draw all face boxes in red
+            for x, y, w, h in faces:
+                cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+        else:
+            # Exactly one face - good!
+            x, y, w, h = faces[0]
+
+            # Draw face box
+            if time_until_capture > 0:
+                # Waiting - blue box with countdown
+                cv2.rectangle(display_frame, (x, y), (x + w, y + h), (255, 150, 0), 2)
+                countdown_text = f"Capturing in: {time_until_capture:.1f}s"
+                cv2.putText(
+                    display_frame,
+                    countdown_text,
+                    (10, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (255, 150, 0),
+                    2,
+                )
+            else:
+                # Ready to capture - crop BEFORE drawing with padding
+                # Add 30% padding around face for better recognition
+                pad_x = int(w * 0.3)
+                pad_y = int(h * 0.3)
+                crop_x1 = max(0, x - pad_x)
+                crop_y1 = max(0, y - pad_y)
+                crop_x2 = min(frame_width, x + w + pad_x)
+                crop_y2 = min(frame_height, y + h + pad_y)
+                face_crop = display_frame[crop_y1:crop_y2, crop_x1:crop_x2].copy()
+
+                # Now draw green box (on original detection, not padded area)
+                cv2.rectangle(display_frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+
+                # Encode the clean crop
+                encoding = recognizer.encode_face(face_crop)
+
+                if encoding is not None:
+                    encodings.append(encoding)
+                    captures_done += 1
+                    last_capture_time = time.time()
+                    print(f"  Captured image {captures_done}/{target_captures}")
+
+                    # Show capture feedback
+                    cv2.putText(
+                        display_frame,
+                        f"Captured! ({captures_done}/{target_captures})",
+                        (10, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (0, 255, 0),
+                        2,
+                    )
+                else:
+                    # Encoding failed - face_recognition couldn't find face in crop
+                    cv2.putText(
+                        display_frame,
+                        "Encoding failed - hold still...",
+                        (10, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 0, 255),
+                        2,
+                    )
+
+        # Instructions at bottom
+        cv2.putText(
+            display_frame,
+            "Press 'q' to cancel",
+            (10, frame_height - 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (128, 128, 128),
+            1,
+        )
+
+        cv2.imshow("Face Enrollment", display_frame)
+
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            print("\nEnrollment cancelled.")
+            cv2.destroyAllWindows()
+            return 1
+
+    # Save encodings
+    print(f"\nCaptured {len(encodings)} images successfully!")
+    print("Saving owner encoding...")
+    recognizer.save_owner(encodings)
+    print(f"Owner enrolled and saved to: {recognizer.get_owner_file_path()}")
+    print(f"Tolerance setting: {tolerance}")
+    print("\nYou can now run with --recognize to enable face recognition.")
+
+    cv2.destroyAllWindows()
+    return 0
+
+
 def main():
     """Capture and display camera frames with face detection using Haar cascade."""
     global USE_GPU
@@ -526,6 +719,29 @@ def main():
         print("Error: Could not load Haar cascade classifiers")
         cap.release()
         return 1
+
+    # Handle enrollment mode separately
+    if args.enroll:
+        recognizer = FaceRecognizer(tolerance=args.tolerance)
+        result = run_enrollment(cap, frontal_cascade, recognizer, args.tolerance)
+        cap.release()
+        return result
+
+    # Initialize face recognizer - enabled automatically if owner is enrolled
+    recognizer = FaceRecognizer(tolerance=args.tolerance)
+    if recognizer.has_owner():
+        print("\n=== Face Recognition ===")
+        print(f"Owner loaded from: {recognizer.get_owner_file_path()}")
+        print(f"Recognition tolerance: {args.tolerance}")
+        print("Alerts will only trigger for unknown faces.")
+        print("========================")
+    else:
+        print("\n=== No Owner Enrolled ===")
+        print("Face recognition disabled - no owner enrolled.")
+        print("Run with --enroll to set up face recognition.")
+        print("Alerts will trigger for all detected faces.")
+        print("=========================")
+        recognizer = None  # Disable recognition if no owner
 
     # Scale factor for resizing frame during detection (0.5 = half resolution)
     detection_scale = 0.5
@@ -618,20 +834,66 @@ def main():
         # Update face tracker with mirrored detections
         face_tracker.update(mirrored_detections)
         tracked_faces = face_tracker.get_all_faces()
-        num_persistent = face_tracker.get_persistent_count()
 
-        # Draw rectangles around tracked faces with color based on persistence
+        # Run face recognition on pending faces (only when recognizer is enabled)
+        if recognizer:
+            for face in face_tracker.get_pending_faces():
+                x, y, w, h = face.bbox
+                # Add 30% padding around face for better recognition
+                # (face_recognition needs context beyond the tight Haar cascade crop)
+                pad_x = int(w * 0.3)
+                pad_y = int(h * 0.3)
+                x1 = max(0, x - pad_x)
+                y1 = max(0, y - pad_y)
+                x2 = min(display_frame.shape[1], x + w + pad_x)
+                y2 = min(display_frame.shape[0], y + h + pad_y)
+
+                if x2 > x1 and y2 > y1:
+                    face_crop = display_frame[y1:y2, x1:x2]
+                    encoding = recognizer.encode_face(face_crop)
+
+                    if encoding is not None:
+                        if recognizer.is_owner(encoding):
+                            face_tracker.set_identity(face.id, "owner")
+                        else:
+                            face_tracker.set_identity(face.id, "unknown")
+                    # If encoding fails, keep as pending and retry next frame
+
+        # Define colors for different states
+        # BGR format: (Blue, Green, Red)
+        COLOR_OWNER = (180, 200, 220)  # Beige
+        COLOR_UNKNOWN = (0, 0, 255)  # Red
+        COLOR_PENDING = (255, 150, 0)  # Blue-ish (recognition in progress)
+        COLOR_PERSISTENT = (0, 255, 0)  # Green (no recognition mode)
+        COLOR_NOT_PERSISTENT = (255, 150, 0)  # Blue (no recognition mode)
+
+        # Draw rectangles around tracked faces
+        num_unknown = 0
         for face in tracked_faces:
             x, y, w, h = face.bbox
-            is_persistent = face.is_persistent(args.persistence)
 
-            # Green for persistent faces, blue for not-yet-persistent
-            color = (0, 255, 0) if is_persistent else (255, 150, 0)
+            if recognizer:
+                # Recognition mode: color based on identity
+                if face.identity == "owner":
+                    color = COLOR_OWNER
+                    label = "Owner"
+                elif face.identity == "unknown":
+                    color = COLOR_UNKNOWN
+                    label = "Unknown"
+                    num_unknown += 1
+                else:  # pending
+                    color = COLOR_PENDING
+                    label = "..."
+            else:
+                # No recognition: color based on persistence
+                is_persistent = face.is_persistent(args.persistence)
+                color = COLOR_PERSISTENT if is_persistent else COLOR_NOT_PERSISTENT
+                label = f"{face.duration:.1f}s"
 
             cv2.rectangle(display_frame, (x, y), (x + w, y + h), color, 2)
             cv2.putText(
                 display_frame,
-                f"{face.duration:.1f}s",
+                label,
                 (x, y - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
@@ -641,14 +903,34 @@ def main():
 
         # Check and send alerts if enabled
         if alert_manager:
-            if alert_manager.should_alert(num_persistent):
-                # Send alert with the current display frame (has boxes drawn)
-                persistent_faces = face_tracker.get_persistent_faces()
-                max_duration = (
-                    max(f.duration for f in persistent_faces) if persistent_faces else 0
-                )
-                alert_manager.send_alert(display_frame, num_persistent, max_duration)
-            alert_manager.update_count(num_persistent)
+            if recognizer:
+                # Recognition mode: only alert for persistent unknown faces
+                num_persistent_unknown = face_tracker.get_persistent_unknown_count()
+                if alert_manager.should_alert(num_persistent_unknown):
+                    persistent_unknown = face_tracker.get_persistent_unknown_faces()
+                    max_duration = (
+                        max(f.duration for f in persistent_unknown)
+                        if persistent_unknown
+                        else 0
+                    )
+                    alert_manager.send_alert(
+                        display_frame, num_persistent_unknown, max_duration
+                    )
+                alert_manager.update_count(num_persistent_unknown)
+            else:
+                # No recognition: alert for all persistent faces
+                num_persistent = face_tracker.get_persistent_count()
+                if alert_manager.should_alert(num_persistent):
+                    persistent_faces = face_tracker.get_persistent_faces()
+                    max_duration = (
+                        max(f.duration for f in persistent_faces)
+                        if persistent_faces
+                        else 0
+                    )
+                    alert_manager.send_alert(
+                        display_frame, num_persistent, max_duration
+                    )
+                alert_manager.update_count(num_persistent)
 
         # Calculate FPS
         fps_frame_count += 1
@@ -658,10 +940,21 @@ def main():
             fps_frame_count = 0
             fps_start_time = time.time()
 
-        # Display the count of detected people and FPS
+        # Display status text
+        if recognizer:
+            num_persistent_unknown = face_tracker.get_persistent_unknown_count()
+            status_text = (
+                f"Detected: {len(tracked_faces)} | "
+                f"Unknown: {num_unknown} | "
+                f"Persistent: {num_persistent_unknown}"
+            )
+        else:
+            num_persistent = face_tracker.get_persistent_count()
+            status_text = f"Detected: {len(tracked_faces)} | Persistent: {num_persistent}"
+
         cv2.putText(
             display_frame,
-            f"Detected: {len(tracked_faces)} | Persistent: {num_persistent}",
+            status_text,
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,

@@ -16,6 +16,7 @@ class TrackedFace:
     bbox: tuple[int, int, int, int]  # (x, y, w, h)
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
+    identity: str = "pending"  # "owner", "unknown", or "pending"
 
     @property
     def duration(self) -> float:
@@ -205,3 +206,55 @@ class FaceTracker:
             List of all TrackedFace objects
         """
         return list(self._tracked.values())
+
+    def set_identity(self, face_id: int, identity: str) -> None:
+        """Set the identity of a tracked face.
+
+        Args:
+            face_id: ID of the face to update
+            identity: Identity to set ("owner", "unknown", or "pending")
+        """
+        if face_id in self._tracked:
+            self._tracked[face_id].identity = identity
+
+    def get_pending_faces(self) -> list[TrackedFace]:
+        """Get faces that haven't been identified yet.
+
+        Returns:
+            List of TrackedFace objects with identity == "pending"
+        """
+        return [face for face in self._tracked.values() if face.identity == "pending"]
+
+    def get_unknown_faces(self) -> list[TrackedFace]:
+        """Get faces identified as unknown (not owner).
+
+        Returns:
+            List of TrackedFace objects with identity == "unknown"
+        """
+        return [face for face in self._tracked.values() if face.identity == "unknown"]
+
+    def get_persistent_unknown_count(self) -> int:
+        """Count unknown faces present longer than persistence threshold.
+
+        Returns:
+            Number of persistent unknown faces
+        """
+        return sum(
+            1
+            for face in self._tracked.values()
+            if face.identity == "unknown"
+            and face.is_persistent(self.persistence_threshold)
+        )
+
+    def get_persistent_unknown_faces(self) -> list[TrackedFace]:
+        """Get unknown faces present longer than persistence threshold.
+
+        Returns:
+            List of persistent unknown TrackedFace objects
+        """
+        return [
+            face
+            for face in self._tracked.values()
+            if face.identity == "unknown"
+            and face.is_persistent(self.persistence_threshold)
+        ]
