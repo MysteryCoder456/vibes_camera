@@ -1,6 +1,14 @@
-# Security Camera - Face Detection with Discord Alerts
+# Security Camera
 
 A real-time face detection application using OpenCV Haar cascades with optional Discord DM alerts.
+
+## Vibe-Code Disclaimer
+
+This project was entirely vibe-coded as an experiment for me to gauge how well the
+Claude + OpenCode combo performs. That being said, I didn't one-shot this app. I took
+my time and oversaw everything Claude did, giving it pointers whenever it failed or
+overlooked things. The fact that Claude was able to cook this up in the time that it
+did is quite impressive, but it does also have it's fair share of drawbacks.
 
 ## Features
 
