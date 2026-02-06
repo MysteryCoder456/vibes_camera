@@ -63,13 +63,13 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
 
     # File handler - logs at specified level (default INFO)
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(level)
+    file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
     # Console handler - only WARNING and above to keep terminal clean
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.WARNING)
+    console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
